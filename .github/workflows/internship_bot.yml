@@ -44,8 +44,10 @@ jobs:
           JOOBLE_KEY: ${{ secrets.JOOBLE_KEY }}
           SERPAPI_KEY: ${{ secrets.SERPAPI_KEY }}
 
-          # Optional Apify Integration
+          # Optional Apify Integration (Supports any secret name)
           APIFY_TOKEN: ${{ secrets.APIFY_TOKEN }}
+          APIFY_KEY: ${{ secrets.APIFY_KEY }}
+          APIFY_API_KEY: ${{ secrets.APIFY_API_KEY }}
           APIFY_ACTORS: ${{ vars.APIFY_ACTORS }}
           APIFY_INPUT_JSON: ${{ vars.APIFY_INPUT_JSON }}
           APIFY_MAX_ITEMS: ${{ vars.APIFY_MAX_ITEMS }}
