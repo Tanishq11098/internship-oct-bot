@@ -1020,51 +1020,100 @@ def fetch_serpapi(session: ScraperSession, query: str) -> List[JobListing]:
                 ))
     return listings
 
+# Built-in Default Apify Actors (Zero-Config Execution)
+BUILTIN_APIFY_ACTORS = [
+    {
+        "actor_id": "scrapio/linkedin-search-jobs-scraper",
+        "name": "LinkedIn",
+        "build_payload": lambda q: {"title": q, "location": "India", "rows": 25}
+    },
+    {
+        "actor_id": "orgupdate/indeed-jobs-scraper",
+        "name": "Indeed",
+        "build_payload": lambda q: {"query": q, "location": "India", "maxRows": 25}
+    },
+    {
+        "actor_id": "muhammetakkurtt/naukri-job-scraper",
+        "name": "Naukri",
+        "build_payload": lambda q: {"keyword": q, "location": "Delhi NCR", "maxJobs": 25}
+    }
+]
+
 def fetch_apify(session: ScraperSession, query: str) -> List[JobListing]:
-    """Queries configured Apify actors via REST API with 150s timeout."""
+    """Queries Apify actors. Runs built-in actors (LinkedIn, Indeed, Naukri) automatically if APIFY_TOKEN exists."""
     token = os.getenv("APIFY_TOKEN")
-    actors_str = os.getenv("APIFY_ACTORS", "")
-    if not token or not actors_str.strip():
+    if not token or not str(token).strip():
         return []
     SCRUBBER.register_secret(token)
 
-    actors = [a.strip() for a in actors_str.split(",") if a.strip()]
-    raw_template = os.getenv("APIFY_INPUT_JSON", '{"queries": ["{query}"], "maxItems": 50}')
-    max_items = int(os.getenv("APIFY_MAX_ITEMS", "100"))
-
     listings: List[JobListing] = []
-    headers = {"Authorization": f"Bearer {token}", "Content-Type": "application/json"}
+    headers = {"Authorization": f"Bearer {token.strip()}", "Content-Type": "application/json"}
+    max_items = int(os.getenv("APIFY_MAX_ITEMS", "50"))
 
-    for actor in actors:
-        # Safe JSON parameter replacement
-        try:
-            formatted_json_str = raw_template.replace("{query}", query).replace("{location}", "India")
-            payload = json.loads(formatted_json_str)
-        except Exception as e:
-            logger.warning(f"Apify template JSON formatting failed: {e}")
-            continue
+    # Check if custom actors are specified, otherwise use our built-in actors
+    custom_actors_str = os.getenv("APIFY_ACTORS", "").strip()
+    if custom_actors_str:
+        actor_list = []
+        for a in custom_actors_str.split(","):
+            if a.strip():
+                actor_list.append({
+                    "actor_id": a.strip(),
+                    "name": a.strip().split("/")[-1],
+                    "build_payload": lambda q: {"queries": [q], "location": "India", "maxItems": max_items}
+                })
+    else:
+        actor_list = BUILTIN_APIFY_ACTORS
 
-        url = f"https://api.apify.com/v2/acts/{actor}/run-sync-get-dataset-items?timeout={APIFY_TIMEOUT}&memory=1024"
-        diag = SourceDiagnostic(source_name=f"Apify ({actor})", source_type="Apify", host_path=get_host_path_only(url))
+    for actor in actor_list:
+        actor_id = actor["actor_id"]
+        source_label = f"Apify-{actor['name']}"
+        payload = actor["build_payload"](query)
+
+        url = f"https://api.apify.com/v2/acts/{actor_id}/run-sync-get-dataset-items?timeout={APIFY_TIMEOUT}&memory=1024"
+        diag = SourceDiagnostic(source_name=source_label, source_type="Apify", host_path=get_host_path_only(url))
 
         try:
             resp = requests.post(url, headers=headers, json=payload, timeout=APIFY_TIMEOUT)
             diag.http_status = resp.status_code
-            if resp.status_code == 201 or resp.status_code == 200:
+            if resp.status_code in (200, 201):
                 items = resp.json()
                 if isinstance(items, list):
                     diag.cards_found = len(items)
                     for item in items[:max_items]:
-                        title = item.get("title") or item.get("jobTitle") or item.get("name")
-                        company = item.get("company") or item.get("companyName") or item.get("employer_name")
-                        link = item.get("url") or item.get("link") or item.get("jobUrl") or item.get("applyUrl")
-                        loc = item.get("location") or item.get("city") or "India"
-                        desc = item.get("description") or item.get("snippet") or ""
+                        if not isinstance(item, dict):
+                            continue
+                        # Multi-attribute field extraction supporting nested structures
+                        title = (
+                            item.get("title") or item.get("jobTitle") or
+                            item.get("name") or item.get("position")
+                        )
+                        company = (
+                            item.get("company") or item.get("companyName") or
+                            item.get("employer_name") or
+                            (item.get("companyDetails") or {}).get("name")
+                        )
+                        link = (
+                            item.get("url") or item.get("link") or
+                            item.get("jobUrl") or item.get("applyUrl") or
+                            item.get("jobDetailsUrl")
+                        )
+                        loc = (
+                            item.get("location") or item.get("city") or
+                            item.get("jobLocation") or "Delhi NCR"
+                        )
+                        desc = (
+                            item.get("description") or item.get("snippet") or
+                            item.get("jobDescription") or ""
+                        )
 
                         if title and company and link:
                             listings.append(JobListing(
-                                title=str(title), company=str(company), location=str(loc),
-                                link=str(link), source=f"Apify-{actor}", description=str(desc)
+                                title=str(title).strip(),
+                                company=str(company).strip(),
+                                location=str(loc).strip(),
+                                link=str(link).strip(),
+                                source=source_label,
+                                description=str(desc).strip()
                             ))
             else:
                 diag.error_message = f"Apify returned HTTP {resp.status_code}"
