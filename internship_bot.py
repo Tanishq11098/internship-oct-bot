@@ -85,7 +85,11 @@ NOISE_TERMS: List[str] = [
     "hr", "telecaller", "bpo", "customer", "graphic", "content",
     "business development", "bde", "bd", "bdm", "logistics", "senior",
     "sr", "manager", "vp", "vice president", "director", "head of",
-    "lead", "principal", "avp", "chief"
+    "lead", "principal", "avp", "chief", "campus ambassador", "ambassador",
+    "video editing", "video editor", "dance", "trainer", "psychologist",
+    "3d printing", "sports management", "fundraising", "fundraiser",
+    "audio annotator", "ui/ux", "podcast", "law/legal", "legal intern",
+    "travel consultant", "student networking"
 ]
 
 # Domain Matching (First-Match-Wins with Assigned Points)
@@ -1020,7 +1024,7 @@ def fetch_serpapi(session: ScraperSession, query: str) -> List[JobListing]:
                 ))
     return listings
 
-# Built-in Default Apify Actors (Zero-Config Execution)
+# Built-in Default Apify Actors (4 Major Platforms: LinkedIn, Indeed, Naukri, Google Jobs)
 BUILTIN_APIFY_ACTORS = [
     {
         "actor_id": "scrapio/linkedin-search-jobs-scraper",
@@ -1036,35 +1040,39 @@ BUILTIN_APIFY_ACTORS = [
         "actor_id": "muhammetakkurtt/naukri-job-scraper",
         "name": "Naukri",
         "build_payload": lambda q: {"keyword": q, "location": "Delhi NCR", "maxJobs": 25}
+    },
+    {
+        "actor_id": "lukaskrivka/google-jobs-scraper",
+        "name": "GoogleJobs",
+        "build_payload": lambda q: {"queries": [f"{q} India"], "maxItems": 25}
     }
 ]
 
 def fetch_apify(session: ScraperSession, query: str) -> List[JobListing]:
-    """Queries Apify actors. Runs built-in actors (LinkedIn, Indeed, Naukri) automatically if APIFY_TOKEN exists."""
-    token = os.getenv("APIFY_TOKEN")
+    """Queries all 4 built-in Apify actors (LinkedIn, Indeed, Naukri, Google Jobs)."""
+    token = (
+        os.getenv("APIFY_TOKEN") or
+        os.getenv("APIFY_KEY") or
+        os.getenv("APIFY_API_KEY")
+    )
     if not token or not str(token).strip():
+        # Record diagnostic entry so user sees in Source Stats why Apify didn't trigger
+        diag = SourceDiagnostic(
+            source_name="Apify",
+            source_type="Apify",
+            error_message="APIFY_TOKEN missing from GitHub Secrets"
+        )
+        session.diagnostics.append(diag)
         return []
+
+    token = str(token).strip()
     SCRUBBER.register_secret(token)
 
     listings: List[JobListing] = []
-    headers = {"Authorization": f"Bearer {token.strip()}", "Content-Type": "application/json"}
-    max_items = int(os.getenv("APIFY_MAX_ITEMS", "50"))
+    headers = {"Authorization": f"Bearer {token}", "Content-Type": "application/json"}
+    max_items = int(os.getenv("APIFY_MAX_ITEMS", "30"))
 
-    # Check if custom actors are specified, otherwise use our built-in actors
-    custom_actors_str = os.getenv("APIFY_ACTORS", "").strip()
-    if custom_actors_str:
-        actor_list = []
-        for a in custom_actors_str.split(","):
-            if a.strip():
-                actor_list.append({
-                    "actor_id": a.strip(),
-                    "name": a.strip().split("/")[-1],
-                    "build_payload": lambda q: {"queries": [q], "location": "India", "maxItems": max_items}
-                })
-    else:
-        actor_list = BUILTIN_APIFY_ACTORS
-
-    for actor in actor_list:
+    for actor in BUILTIN_APIFY_ACTORS:
         actor_id = actor["actor_id"]
         source_label = f"Apify-{actor['name']}"
         payload = actor["build_payload"](query)
@@ -1073,12 +1081,15 @@ def fetch_apify(session: ScraperSession, query: str) -> List[JobListing]:
         diag = SourceDiagnostic(source_name=source_label, source_type="Apify", host_path=get_host_path_only(url))
 
         try:
+            logger.info(f"Calling Apify Actor: {source_label} for query '{query}'...")
             resp = requests.post(url, headers=headers, json=payload, timeout=APIFY_TIMEOUT)
             diag.http_status = resp.status_code
+
             if resp.status_code in (200, 201):
                 items = resp.json()
                 if isinstance(items, list):
                     diag.cards_found = len(items)
+                    logger.info(f"Apify {source_label} returned {len(items)} items for '{query}'")
                     for item in items[:max_items]:
                         if not isinstance(item, dict):
                             continue
@@ -1116,9 +1127,12 @@ def fetch_apify(session: ScraperSession, query: str) -> List[JobListing]:
                                 description=str(desc).strip()
                             ))
             else:
-                diag.error_message = f"Apify returned HTTP {resp.status_code}"
+                raw_err = resp.text[:120]
+                diag.error_message = f"HTTP {resp.status_code}: {raw_err}"
+                logger.warning(f"Apify {source_label} returned HTTP {resp.status_code}: {SCRUBBER.scrub(raw_err)}")
         except Exception as e:
             diag.error_message = SCRUBBER.scrub(str(e))
+            logger.warning(f"Apify {source_label} exception: {SCRUBBER.scrub(str(e))}")
 
         session.diagnostics.append(diag)
 
@@ -1525,7 +1539,7 @@ def send_daily_email(
     excel_path: str,
     sheet_id: Optional[str] = None
 ) -> bool:
-    """Dispatches the daily 8:00 AM IST HTML summary with internships.xlsx attached."""
+    """Dispatches the daily 8:00 AM IST HTML summary with internship-oct-bot.xlsx attached."""
     sender = os.getenv("EMAIL")
     password = os.getenv("PASSWORD", "").replace(" ", "")
     recipient = os.getenv("EMAIL_TO") or sender
@@ -1556,7 +1570,7 @@ def send_daily_email(
         cards_html = "".join([build_card_html(item) for item in items[:EMAIL_MAX_PER_SECTION]])
         overflow_note = ""
         if len(items) > EMAIL_MAX_PER_SECTION:
-            overflow_note = f"<p style='color: #2563EB; font-weight: bold;'>+{len(items) - EMAIL_MAX_PER_SECTION} more in attached internships.xlsx</p>"
+            overflow_note = f"<p style='color: #2563EB; font-weight: bold;'>+{len(items) - EMAIL_MAX_PER_SECTION} more in attached internship-oct-bot.xlsx</p>"
 
         return f"""
         <h2 style='color: #1E3A8A; border-bottom: 2px solid #E2E8F0; padding-bottom: 6px;'>{title} ({len(items)})</h2>
@@ -1594,7 +1608,7 @@ def send_daily_email(
             {render_section("3. Full-Time Roles (Freshers)", full_time)}
 
             <div style="margin-top: 30px; padding-top: 15px; border-top: 1px solid #E2E8F0; font-size: 12px; color: #94A3B8; text-align: center;">
-                Automated Job-Hunting Bot • Preserved in attached internships.xlsx (50-Day Archive)
+                Automated Job-Hunting Bot • Preserved in attached internship-oct-bot.xlsx (50-Day Archive)
             </div>
         </div>
     </body>
@@ -1613,7 +1627,7 @@ def send_daily_email(
         try:
             with open(excel_path, "rb") as f:
                 part = MIMEApplication(f.read(), _subtype="vnd.openxmlformats-officedocument.spreadsheetml.sheet")
-                part.add_header("Content-Disposition", "attachment", filename="internships.xlsx")
+                part.add_header("Content-Disposition", "attachment", filename="internship-oct-bot.xlsx")
                 msg.attach(part)
         except Exception as e:
             logger.error(f"Failed to attach Excel file to email: {e}")
@@ -1691,7 +1705,7 @@ def send_alert_email(diagnostics: List[SourceDiagnostic], excel_path: str) -> bo
             </table>
 
             <p style="margin-top: 20px; font-size: 13px; color: #475569;">
-                The 50-day historical archive from your Google Sheet has still been compiled and attached as <code>internships.xlsx</code>.
+                The 50-day historical archive from your Google Sheet has still been compiled and attached as <code>internship-oct-bot.xlsx</code>.
             </p>
         </div>
     </body>
@@ -1708,7 +1722,7 @@ def send_alert_email(diagnostics: List[SourceDiagnostic], excel_path: str) -> bo
         try:
             with open(excel_path, "rb") as f:
                 part = MIMEApplication(f.read(), _subtype="vnd.openxmlformats-officedocument.spreadsheetml.sheet")
-                part.add_header("Content-Disposition", "attachment", filename="internships.xlsx")
+                part.add_header("Content-Disposition", "attachment", filename="internship-oct-bot.xlsx")
                 msg.attach(part)
         except Exception:
             pass
@@ -1894,11 +1908,11 @@ def run_pipeline() -> int:
     gsheet_mgr.append_all_listings(qualified_today, today_str)
     gsheet_mgr.append_tracker_listings(qualified_today, today_str)
 
-    # 8. Generate Excel Report (internships.xlsx) with 50-day window
+    # 8. Generate Excel Report (internship-oct-bot.xlsx) with 50-day window
     cutoff_50d = (today_dt - timedelta(days=EXCEL_WINDOW_DAYS)).strftime("%Y-%m-%d")
     historical_50d = gsheet_mgr.fetch_50day_history(cutoff_50d)
 
-    excel_output_path = "internships.xlsx"
+    excel_output_path = "internship-oct-bot.xlsx"
     generate_excel_report(
         output_path=excel_output_path,
         today_listings=qualified_today,
