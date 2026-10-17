@@ -59,7 +59,7 @@ jobs:
         id: check_excel
         if: always()
         run: |
-          if [ -f internships.xlsx ]; then
+          if [ -f internship-oct-bot.xlsx ]; then
             echo "exists=true" >> "$GITHUB_OUTPUT"
           else
             echo "exists=false" >> "$GITHUB_OUTPUT"
@@ -69,6 +69,6 @@ jobs:
         if: always() && steps.check_excel.outputs.exists == 'true'
         uses: actions/upload-artifact@v4
         with:
-          name: internships
-          path: internships.xlsx
+          name: internship-oct-bot
+          path: internship-oct-bot.xlsx
           retention-days: 30
